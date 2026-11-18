@@ -69,6 +69,14 @@ nls_cp437
 nls_iso8859-1
 snd_hda_intel
 snd_usb_audio
+simpledrm
+i915
+amdgpu
+radeon
+nouveau
+virtio_gpu
+vmwgfx
+bochs
 EOF
 
 # tty1 roda o jogo (e reinicia sozinho se o navegador fechar)
@@ -92,6 +100,7 @@ chmod 755 "$tmp"/usr/local/bin/jukeserver.py
 
 # serviços
 rc_add devfs sysinit
+rc_add modloop sysinit
 rc_add dmesg sysinit
 rc_add udev sysinit
 rc_add udev-trigger sysinit
