@@ -20,10 +20,43 @@ if [ ! -x /usr/bin/cage ] || [ ! -x /usr/bin/chromium ] || [ ! -x /usr/bin/pytho
 	echo "Espaco da raiz:"; df -h /
 	echo "Pacotes:"; apk info -e cage chromium seatd pulseaudio eudev python3
 	echo "Causa provavel: pouca memoria RAM (o sistema precisa de 2 GB ou mais)."
+	ls /lib/modules /dev/dri /dev/snd 2>&1
 	echo "TIRE UMA FOTO DESTA TELA e mande para o Claude."
 	sleep 3600
 	exit 0
 fi
+
+# modulos do kernel (placa de video, audio, USB). Sem /lib/modules nada disso funciona.
+if [ ! -d "/lib/modules/$(uname -r)" ]; then
+	rc-service modloop start >/dev/null 2>&1
+fi
+if [ ! -d "/lib/modules/$(uname -r)" ]; then
+	# plano B: acha o arquivo modloop na midia de boot e monta na mao
+	modprobe -q loop 2>/dev/null; modprobe -q squashfs 2>/dev/null
+	ML="$(ls /media/*/boot/modloop-* /.modloop-img 2>/dev/null | head -n1)"
+	if [ -n "$ML" ]; then
+		mkdir -p /.modloop
+		mount -t squashfs -o loop "$ML" /.modloop 2>/dev/null
+		mkdir -p /lib/modules
+		mount --bind /.modloop/modules /lib/modules 2>/dev/null
+	fi
+fi
+if [ -d "/lib/modules/$(uname -r)" ]; then
+	depmod -a 2>/dev/null
+	for m in usb_storage uas sd_mod vfat exfat ntfs3 nls_utf8 snd_hda_intel snd_usb_audio simpledrm i915 amdgpu radeon nouveau virtio_gpu vmwgfx bochs; do
+		modprobe -q "$m" 2>/dev/null
+	done
+	udevadm trigger --action=add 2>/dev/null
+	udevadm settle --timeout=15 2>/dev/null
+fi
+# espera a placa de video aparecer (ate 15 s)
+for i in $(seq 1 15); do
+	[ -e /dev/dri/card0 ] && break
+	sleep 1
+done
+chmod 660 /dev/dri/* 2>/dev/null
+chgrp video /dev/dri/* 2>/dev/null
+chgrp audio /dev/snd/* 2>/dev/null; chmod 660 /dev/snd/* 2>/dev/null
 
 # espera os discos USB aparecerem (alguns pendrives demoram) e sobe o servidor do jukebox
 udevadm settle --timeout=10 2>/dev/null
