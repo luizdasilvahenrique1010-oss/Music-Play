@@ -1,0 +1,99 @@
+#!/bin/sh
+# Launcher do JukeOS: sobe o servidor de seat e o servidor de som, depois o Cage
+# (compositor que mostra so 1 programa) com o Chromium em modo aplicativo/quiosque
+# (sem barra de endereco, sem abas) apontando pro jukebox (servido por http://127.0.0.1:8765).
+# Se o jogo cair em menos de 25 s (placa de video antiga), liga o MODO SEGURO
+# (video por software) na proxima tentativa.
+
+GAME_URL="http://127.0.0.1:8765/index.html"
+
+# garante o /dev/null liberado para todos (o usuario "game" precisa dele)
+[ -c /dev/null ] || { rm -f /dev/null; mknod -m 666 /dev/null c 1 3; }
+chmod 666 /dev/null 2>/dev/null
+
+# se faltar programa (instalacao incompleta, geralmente por pouca RAM), mostra o diagnostico
+# na tela em vez de ficar repetindo erro
+if [ ! -x /usr/bin/cage ] || [ ! -x /usr/bin/chromium ] || [ ! -x /usr/bin/python3 ]; then
+	echo
+	echo "=== JukeOS: FALTAM PROGRAMAS (cage ou chromium nao instalados) ==="
+	echo "Memoria em MB:"; free -m
+	echo "Espaco da raiz:"; df -h /
+	echo "Pacotes:"; apk info -e cage chromium seatd pulseaudio eudev python3
+	echo "Causa provavel: pouca memoria RAM (o sistema precisa de 2 GB ou mais)."
+	echo "TIRE UMA FOTO DESTA TELA e mande para o Claude."
+	sleep 3600
+	exit 0
+fi
+
+# espera os discos USB aparecerem (alguns pendrives demoram) e sobe o servidor do jukebox
+udevadm settle --timeout=10 2>/dev/null
+for i in 1 2 3 4 5 6; do
+	ls /sys/class/block 2>/dev/null | grep -q '^sd' && break
+	sleep 1
+done
+if ! wget -q -O /dev/null http://127.0.0.1:8765/api/fontes 2>/dev/null; then
+	JUKE_ROOT=/opt/jogo python3 /usr/local/bin/jukeserver.py >/tmp/jukeserver.log 2>&1 &
+	for i in $(seq 1 30); do
+		wget -q -O /dev/null http://127.0.0.1:8765/api/fontes 2>/dev/null && break
+		sleep 1
+	done
+fi
+
+# usuario sem privilegios (o Chromium nao gosta de rodar como root)
+adduser -D -s /bin/sh game 2>/dev/null
+for g in video input audio render seat; do
+	addgroup game "$g" 2>/dev/null
+done
+UID_GAME="$(id -u game)"
+
+mkdir -p "/run/user/$UID_GAME"
+chown game "/run/user/$UID_GAME"
+chmod 700 "/run/user/$UID_GAME"
+
+# som no maximo em todas as placas de audio (ALSA)
+for c in $(sed -n 's/^ *\([0-9]\+\) \[.*/\1/p' /proc/asound/cards 2>/dev/null); do
+	for ctl in Master Speaker Headphone PCM Front "Speaker+LO" Line; do
+		amixer -c "$c" -q sset "$ctl" 100% unmute 2>/dev/null
+	done
+done
+
+# seatd: da ao usuario acesso a tela/teclado/mouse
+pgrep seatd >/dev/null 2>&1 || seatd -g video >/dev/null 2>&1 &
+sleep 1
+
+if [ -f /run/slotos-safe ]; then
+	GPUENV="export WLR_RENDERER=pixman WLR_RENDERER_ALLOW_SOFTWARE=1 LIBGL_ALWAYS_SOFTWARE=1"
+	GPUFLAGS="--disable-gpu"
+else
+	GPUENV="export WLR_RENDERER_ALLOW_SOFTWARE=1"
+	GPUFLAGS=""
+fi
+
+T0="$(date +%s)"
+
+su game -c "
+	export XDG_RUNTIME_DIR=/run/user/$UID_GAME
+	export LIBSEAT_BACKEND=seatd
+	export WLR_NO_HARDWARE_CURSORS=1
+	$GPUENV
+	pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1
+	sleep 2
+	pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1
+	pactl set-sink-volume @DEFAULT_SINK@ 100% >/dev/null 2>&1
+	cage -d -- chromium \
+		--app=$GAME_URL --kiosk --start-fullscreen --disable-dev-tools \
+		--ozone-platform=wayland \
+		--user-data-dir=/tmp/chromium-jukeos \
+		--no-first-run --no-default-browser-check \
+		--disable-infobars --noerrdialogs \
+		--disable-session-crashed-bubble \
+		--disable-pinch --overscroll-history-navigation=0 \
+		--autoplay-policy=no-user-gesture-required \
+		--disable-translate --disable-features=Translate \
+		--window-position=0,0 $GPUFLAGS
+"
+
+T1="$(date +%s)"
+if [ $((T1 - T0)) -lt 25 ]; then
+	touch /run/slotos-safe
+fi
