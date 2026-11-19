@@ -64,12 +64,19 @@ for i in 1 2 3 4 5 6; do
 	ls /sys/class/block 2>/dev/null | grep -q '^sd' && break
 	sleep 1
 done
+# rede interna (loopback) precisa estar ligada, senao o navegador nao acha o servidor local
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
+ip addr add 127.0.0.1/8 dev lo 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null
 if ! wget -q -O /dev/null http://127.0.0.1:8765/api/fontes 2>/dev/null; then
 	JUKE_ROOT=/opt/jogo python3 /usr/local/bin/jukeserver.py >/tmp/jukeserver.log 2>&1 &
 	for i in $(seq 1 30); do
 		wget -q -O /dev/null http://127.0.0.1:8765/api/fontes 2>/dev/null && break
 		sleep 1
 	done
+fi
+# se o servidor nao subiu, abre o jukebox direto do arquivo (sem pendrive automatico)
+if ! wget -q -O /dev/null http://127.0.0.1:8765/api/fontes 2>/dev/null; then
+	GAME_URL="file:///opt/jogo/index.html"
 fi
 
 # usuario sem privilegios (o Chromium nao gosta de rodar como root)
